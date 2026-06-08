@@ -166,28 +166,30 @@ class GameScene extends Phaser.Scene {
         // isInside() 测试：三条线，分别全内 / 全外 / 部分外
         // =========================================================================
 
-        // ---- isOverlapping() 测试 ----
-        // A: 尾巴(1,1) 右2 → 格点 (1,1)(2,1)(3,1)
-        const lineA = new ArrowLineNew(this, container, 1, 1, [
-            { dir: 'right', count: 2 },
-        ], toX, toY, DIR, 'A');
+        // ---- 测试：一条直线 + 前进/后退按钮 ----
+        const testLine = new ArrowLineNew(this, container, 3, 3, [
+            { dir: 'right', count: 3 },
+            { dir: 'down',  count: 2 },
+        ], toX, toY, DIR, '1');
 
-        // B: 尾巴(2,0) 下2 → 格点 (2,0)(2,1)(2,2)，与 A 共享 (2,1)
-        const lineB = new ArrowLineNew(this, container, 2, 0, [
-            { dir: 'down', count: 2 },
-        ], toX, toY, DIR, 'B');
+        // 目标点：尾巴(3,3)走向右，后退向左，左两格=(1,3)
+        const targetCol = 1, targetRow = 3;
+        const targetDot = this.add.image(toX(targetCol), toY(targetRow), 'dot')
+            .setTintFill(0xff4444).setScale(2);
+        container.add(targetDot);
 
-        // C: 尾巴(0,3) 右1 → 格点 (0,3)(1,3)，与 A 无共享
-        const lineC = new ArrowLineNew(this, container, 0, 3, [
-            { dir: 'right', count: 1 },
-        ], toX, toY, DIR, 'C');
-
-        this.time.delayedCall(100, () => {
-            console.log('=== 判定结果 ===');
-            console.log('A isOverlapping：', lineA.isOverlapping(), '(预期 true，和 B 共享格点)');
-            console.log('B isOverlapping：', lineB.isOverlapping(), '(预期 true，和 A 共享格点)');
-            console.log('C isOverlapping：', lineC.isOverlapping(), '(预期 false，独立)');
-        });
+        // 后退按钮
+        const btnRet = this.add.text(width / 2, height - 40, '◀ 后退', {
+            fontSize: '22px',
+            color: '#ff4444',
+            fontFamily: 'Arial, sans-serif',
+            fontStyle: 'bold',
+            stroke: '#000000',
+            strokeThickness: 3,
+        }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(100);
+        btnRet.on('pointerdown', () => testLine.retreat(targetCol, targetRow));
+        btnRet.on('pointerover', () => btnRet.setColor('#ff8888'));
+        btnRet.on('pointerout', () => btnRet.setColor('#ff4444'));
 
         // 整个容器放合适位置
         container.setPosition(width / 2, height / 2 + 20);
