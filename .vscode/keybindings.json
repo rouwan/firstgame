@@ -1,0 +1,8 @@
+[
+    // F4：在 markdown 编辑和预览之间切换
+    {
+        "key": "F4",
+        "command": "markdown.showPreview",
+        "when": "editorLangId == markdown"
+    }
+]

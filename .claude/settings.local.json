@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"h:/workspace/gameDev/firstgame/.vscode\")"
+    ],
+    "additionalDirectories": [
+      "h:\\workspace\\gameDev\\firstgame"
+    ]
+  }
+}

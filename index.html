@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phaser 游戏</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        #game-container {
+            /* Phaser 游戏画布将插入此处 */
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container"></div>
+
+    <!-- Phaser 3（本地文件，避免 CDN 加载不稳） -->
+    <script src="js/lib/phaser.min.js"></script>
+
+    <!-- 配置文件（最先加载，所有场景都能用） -->
+    <script src="js/config.js"></script>
+
+    <!-- 游戏对象 -->
+    <script src="js/objects/ArrowLine.js"></script>
+    <script src="js/objects/ArrowLineNew.js"></script>
+
+    <!-- 场景文件（按依赖顺序加载） -->
+    <script src="js/scenes/HomeScene.js"></script>
+    <script src="js/scenes/GameScene.js"></script>
+
+    <!-- 入口文件 -->
+    <script src="js/main.js"></script>
+</body>
+</html>

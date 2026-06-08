@@ -1,0 +1,6 @@
+{
+    // 点击 .md 文件直接打开预览
+    "workbench.editorAssociations": {
+        "*.md": "vscode.markdown.preview.editor"
+    }
+}

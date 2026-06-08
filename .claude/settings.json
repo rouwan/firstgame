@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(h:\\workspace\\gameDev\\firstgame\\*)",
+      "Write(h:\\workspace\\gameDev\\firstgame\\*)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(mkdir *)",
+      "Bash(mv *)",
+      "Bash(find *)",
+      "Bash(grep *)"
+    ]
+  }
+}
