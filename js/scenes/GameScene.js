@@ -91,108 +91,73 @@ class GameScene extends Phaser.Scene {
         });
 
         // =========================================================================
-        // 点阵（Dot Matrix）— 用 Container 容器实现居中
-        //
-        // 【什么是 Container？】
-        // Container 是一个"组"，把多个对象装在一起。
-        // 里面的对象用相对坐标（相对于容器左上角），
-        // 然后整个容器作为一个整体，设置它在场景中的绝对位置。
-        //
-        // 这样做的好处：
-        //   不用手动算每个点的绝对坐标 → 容器放哪，点阵就整体到哪
-        //
-        // 【坐标系对比】
-        //   场景绝对坐标  →  this.add.image(场景x, 场景y, 'dot')
-        //   容器相对坐标  →  container.add(image(容器内x, 容器内y, 'dot'))
-        //   容器位置      →  container.setPosition(场景x, 场景y)
-        //
-        //   COLS = 8 列（横向，X 轴短）
-        //   ROWS = 16 行（纵向，Y 轴长）
-        //   SPACING = 25 像素
+        // 箭头阵 — 点阵 + 随机游走生成
         // =========================================================================
-        const COLS = CONFIG.MATRIX.COLS;
-        const ROWS = CONFIG.MATRIX.ROWS;
-        const SPACING = CONFIG.MATRIX.SPACING;
-
-        // 容器总尺寸
-        const matrixW = (COLS - 1) * SPACING;
-        const matrixH = (ROWS - 1) * SPACING;
-
-        // 创建容器，初始位置随意（后面会设）
-        const container = this.add.container(0, 0);
-
-        // 向容器内添加点，坐标为相对于容器的偏移
-        // 让点阵中心对齐容器原点 → 每个点的坐标偏移半个矩阵宽高
-        for (let row = 0; row < ROWS; row++) {
-            for (let col = 0; col < COLS; col++) {
-                const dot = this.add.image(
-                    col * SPACING - matrixW / 2,   // 相对 X：居中偏移
-                    row * SPACING - matrixH / 2,   // 相对 Y：居中偏移
-                    'dot'
-                );
-                container.add(dot);
-            }
-        }
+        const matrix = new ArrowMatrixNew(this, CONFIG.MATRIX.COLS, CONFIG.MATRIX.ROWS, CONFIG.MATRIX.SPACING);
+        matrix.drawDots();
+        matrix.setPosition(width / 2, height / 2 + 20);
 
         // =========================================================================
-        // 四个方向的箭头 — 共用一个纹理，靠旋转区分方向
-        //
-        // 箭头纹理默认指向右（→），setAngle() 顺时针旋转：
-        //   → 0°      ↓ 90°      ← 180°      ↑ 270°（或 -90°）
-        //
-        // 每个箭头的尾巴卡在一个点上，尖尖卡在相邻点上
-        // 中心坐标 = 尾巴和尖尖的中点（单位：格）
-        //   → 右：中心 (col+0.5, row)
-        //   ↓ 下：中心 (col, row+0.5)
-        //   ← 左：中心 (col-0.5, row)
-        //   ↑ 上：中心 (col, row-0.5)
-        //
-        // 四个箭头分散摆放，互不重叠
+        // 开发工具：生成按钮
         // =========================================================================
+        const genBtn = this.add.text(width / 2 - 70, 85, '生成一条线', {
+            fontSize: '15px',
+            color: '#ffffff',
+            backgroundColor: '#4488ff',
+            padding: { x: 14, y: 7 },
+            fontFamily: 'Arial, sans-serif',
+        })
+            .setOrigin(0.5)
+            .setInteractive({ useHandCursor: true })
+            .setDepth(100);
 
-        // 辅助：格坐标 → 容器内像素坐标（居中偏移已计入）
-        const toX = (col) => col * SPACING - matrixW / 2;
-        const toY = (row) => row * SPACING - matrixH / 2;
+        const genAllBtn = this.add.text(width / 2 + 70, 85, '全部生成', {
+            fontSize: '15px',
+            color: '#ffffff',
+            backgroundColor: '#44aa44',
+            padding: { x: 14, y: 7 },
+            fontFamily: 'Arial, sans-serif',
+        })
+            .setOrigin(0.5)
+            .setInteractive({ useHandCursor: true })
+            .setDepth(100);
 
-        // 方向 → 角度映射
-        const DIR = {
-            right: { dx: 1, dy: 0, angle: 0   },
-            down:  { dx: 0, dy: 1, angle: 90  },
-            left:  { dx: -1, dy: 0, angle: 180 },
-            up:    { dx: 0, dy: -1, angle: -90 },
+        let lineCount = 0;
+
+        const disableBtns = () => {
+            genBtn.setText(`生成结束 (${lineCount} 条线)`)
+                .setColor('#888888')
+                .setStyle({ backgroundColor: '#333333' })
+                .disableInteractive();
+            genAllBtn.setColor('#888888')
+                .setStyle({ backgroundColor: '#333333' })
+                .disableInteractive();
         };
 
-        // =========================================================================
-        // isInside() 测试：三条线，分别全内 / 全外 / 部分外
-        // =========================================================================
+        const doGenerate = () => {
+            const line = matrix.generateOneLine();
+            if (line) {
+                lineCount++;
+                genBtn.setText(`生成一条线 (${lineCount})`);
+                genAllBtn.setText(`全部生成 (${lineCount})`);
+            }
+            if (matrix.isDone()) {
+                disableBtns();
+                return false;
+            }
+            return true;
+        };
 
-        // ---- 测试：一条直线 + 前进/后退按钮 ----
-        const testLine = new ArrowLineNew(this, container, 3, 3, [
-            { dir: 'right', count: 3 },
-            { dir: 'down',  count: 2 },
-        ], toX, toY, DIR, '1');
+        genBtn.on('pointerdown', () => doGenerate());
 
-        // 目标点：尾巴(3,3)走向右，后退向左，左两格=(1,3)
-        const targetCol = 1, targetRow = 3;
-        const targetDot = this.add.image(toX(targetCol), toY(targetRow), 'dot')
-            .setTintFill(0xff4444).setScale(2);
-        container.add(targetDot);
-
-        // 后退按钮
-        const btnRet = this.add.text(width / 2, height - 40, '◀ 后退', {
-            fontSize: '22px',
-            color: '#ff4444',
-            fontFamily: 'Arial, sans-serif',
-            fontStyle: 'bold',
-            stroke: '#000000',
-            strokeThickness: 3,
-        }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(100);
-        btnRet.on('pointerdown', () => testLine.retreat(targetCol, targetRow));
-        btnRet.on('pointerover', () => btnRet.setColor('#ff8888'));
-        btnRet.on('pointerout', () => btnRet.setColor('#ff4444'));
-
-        // 整个容器放合适位置
-        container.setPosition(width / 2, height / 2 + 20);
+        genAllBtn.on('pointerdown', () => {
+            matrix.generateAll((line, count) => {
+                lineCount = count;
+                genBtn.setText(`生成一条线 (${lineCount})`);
+                genAllBtn.setText(`全部生成 (${lineCount})`);
+            });
+            disableBtns();
+        });
 
         // =========================================================================
         // ESC 键返回首页

@@ -1,20 +1,37 @@
 /**
  * ArrowLine — 箭头线游戏对象
  *
- * 【定义】箭头线 = 尾巴点 + 路径（N 个有向向量）
- *   尾巴点  — startCol, startRow，路径第一个有向向量的出发点
- *   路径    — [{dir, count}, ...]，每个有向向量朝一个方向连走 count 格
- *   有向向量 — 朝一个方向连走直到转弯的一段
- *   头尖点  — 路径末端，即箭头尖端，可由 尾巴点+路径 算出
- *
- * 【序号】images[0]=头(箭头), images[N-1]=尾(线段)
- *
- * 【行为】
- *   点击 → 贪吃蛇式逐格飞出（毁建，非移动）
- *   飞行中头撞到另一条线 → 自己永久红 + 弹回尾巴点，对方闪烁 0.5s 恢复
+ * 【定义】箭头线 = 尾巴点 + 路径 → Step 对象数组
  */
 
-// 方向 → 位移分量
+// =========================================================================
+// Step — 步对象（点阵上的最小单元：一条有向边）
+// =========================================================================
+class Step {
+
+    constructor(startCol, startRow, endCol, endRow, dir, isLast, DIR) {
+        this.startCol = startCol;
+        this.startRow = startRow;
+        this.endCol   = endCol;
+        this.endRow   = endRow;
+        this.dir      = dir;
+        this.angle    = DIR[dir].angle;
+        this.texture  = isLast ? 'arrow' : 'segment';
+        this.edgeKey  = Step.makeEdgeKey(startCol, startRow, endCol, endRow);
+    }
+
+    get centerCol() { return (this.startCol + this.endCol) / 2; }
+    get centerRow() { return (this.startRow + this.endRow) / 2; }
+
+    static makeEdgeKey(c1, r1, c2, r2) {
+        if (c1 < c2 || (c1 === c2 && r1 < r2)) return `${c1},${r1}-${c2},${r2}`;
+        return `${c2},${r2}-${c1},${r1}`;
+    }
+}
+
+// =========================================================================
+// 方向映射
+// =========================================================================
 const DIR_MAP = {
     right: { dx: 1, dy: 0 },
     down:  { dx: 0, dy: 1 },
@@ -22,168 +39,178 @@ const DIR_MAP = {
     up:    { dx: 0, dy: -1 },
 };
 
-// 无向边的唯一 key（端点排序，AB 和 BA 视为同一条边）
-function edgeKey(c1, r1, c2, r2) {
-    if (c1 < c2 || (c1 === c2 && r1 < r2)) {
-        return `${c1},${r1}-${c2},${r2}`;
-    }
-    return `${c2},${r2}-${c1},${r1}`;
-}
-
+// =========================================================================
+// ArrowLine — 箭头线
+// =========================================================================
 class ArrowLine {
 
-    // 全局边注册表：key → 占据该边的 ArrowLine
-    static _edgeMap = new Map();
-
-    // 开发模式：true 显示标签，false 隐藏
     static DEV = true;
+    static _all = [];
 
-    constructor(scene, container, startCol, startRow, path, toX, toY, DIR, label = '') {
+    constructor(scene, container, dotMatrix, tailCol, tailRow, path, toX, toY, DIR, label = '') {
         this.scene = scene;
         this.container = container;
-        this.images = [];       // [0]=头(箭头), [1..n-1]=身体(线段)
-        this.alive = true;
-        this._flying = false;  // 飞行中？用于禁用点击
-        this._label = label;
+        this.dotMatrix = dotMatrix;
 
-        // ---- 初始记录（尾巴点 + 路径 + 坐标映射），复位用 ----
-        this._startCol = startCol;
-        this._startRow = startRow;
-        this._path = path;
+        // ======== 核心数据 ========
+        this.tailCol = tailCol;
+        this.tailRow = tailRow;
+        this.path    = path;
+        this.label   = label;
+
+        // ======== 保存坐标映射 ========
         this._toX = toX;
         this._toY = toY;
         this._DIR = DIR;
 
-        // 路径展开为逐步方向数组
-        this._steps = [];
-        for (const seg of path) {
-            for (let i = 0; i < seg.count; i++) {
-                this._steps.push(seg.dir);
+        // ======== ① 展开：路径 → Step[] ========
+        this.steps = this._expand(tailCol, tailRow, path, DIR);
+
+        // ======== 头尖点 + 飞行方向 ========
+        this.headCol = this.steps[0].endCol;
+        this.headRow = this.steps[0].endRow;
+        this.flyDir  = this.steps[0].dir;
+
+        // ======== 注册格点（向 DotMatrix 报告所有覆盖的格点）========
+        this._registerPoints();
+
+        // ======== ②~⑦ 绘制 ========
+        this._buildImages(toX, toY);
+
+        // ======== ⑨ 标签 ========
+        if (ArrowLine.DEV && label) this._makeLabel(toX, toY);
+
+        // ======== 全局注册 ========
+        ArrowLine._all.push(this);
+    }
+
+    // =========================================================================
+    // _expand — 路径 → Step[]
+    // =========================================================================
+    _expand(tailCol, tailRow, path, DIR) {
+        const steps = [];
+        let col = tailCol;
+        let row = tailRow;
+
+        for (let vi = 0; vi < path.length; vi++) {
+            const vec = path[vi];
+            const isLastVector = (vi === path.length - 1);
+            const d = DIR[vec.dir];
+
+            for (let si = 0; si < vec.count; si++) {
+                const nextCol = col + d.dx;
+                const nextRow = row + d.dy;
+                const isLastStep = isLastVector && (si === vec.count - 1);
+                steps.push(new Step(col, row, nextCol, nextRow, vec.dir, isLastStep, DIR));
+                col = nextCol;
+                row = nextRow;
             }
         }
-        this.flyDir = this._steps[this._steps.length - 1];
 
-        // 绘制
-        this._buildImages(toX, toY, DIR);
+        return steps.reverse();  // [0]=头, [N-1]=尾
+    }
 
-        // 开发标签
-        if (ArrowLine.DEV && label) {
-            this._makeLabel();
+    // =========================================================================
+    // _registerPoints — 向 DotMatrix 注册本线覆盖的所有格点
+    // =========================================================================
+    _registerPoints() {
+        // 箭头尖端（steps[0].endCol/Row）是飞行第一步才会进入的点，
+        // 可能落在邻区甚至棋盘外——不注册，防止与邻区线冲突
+        const tipCol = this.steps[0].endCol;
+        const tipRow = this.steps[0].endRow;
+
+        const seen = new Set();
+        for (const step of this.steps) {
+            const k1 = `${step.startCol},${step.startRow}`;
+            if (!seen.has(k1)) {
+                seen.add(k1);
+                const r = this.dotMatrix.occupy(step.startCol, step.startRow, this);
+                if (!r.ok) console.warn(`[ArrowLine] constructor conflict at ${k1}`);
+            }
+            const k2 = `${step.endCol},${step.endRow}`;
+            if (!seen.has(k2) && (step.endCol !== tipCol || step.endRow !== tipRow)) {
+                seen.add(k2);
+                const r = this.dotMatrix.occupy(step.endCol, step.endRow, this);
+                if (!r.ok) console.warn(`[ArrowLine] constructor conflict at ${k2}`);
+            }
         }
     }
 
     // =========================================================================
-    // _buildImages — 根据 steps 创建图像 + 注册边（constructor / _reset 共用）
+    // _buildImages
     // =========================================================================
-    _buildImages(toX, toY, DIR) {
-        let col = this._startCol;
-        let row = this._startRow;
-        this._edges = [];
-
-        for (let i = 0; i < this._steps.length; i++) {
-            const d = DIR[this._steps[i]];
-            const nextCol = col + d.dx;
-            const nextRow = row + d.dy;
-            const isLast = (i === this._steps.length - 1);
-            const tex = isLast ? 'arrow' : 'segment';
-
-            const cx = (col + nextCol) / 2;
-            const cy = (row + nextRow) / 2;
-
-            const img = this.scene.add.image(toX(cx), toY(cy), tex)
-                .setAngle(d.angle)
+    _buildImages(toX, toY) {
+        this.images = [];
+        for (const step of this.steps) {
+            const img = this.scene.add.image(toX(step.centerCol), toY(step.centerRow), step.texture)
+                .setAngle(step.angle)
                 .setInteractive({ useHandCursor: true });
-
-            img.on('pointerdown', () => this.fly());
+            img.on('pointerdown', () => this.advance());
             this.container.add(img);
             this.images.push(img);
-
-            const key = edgeKey(col, row, nextCol, nextRow);
-            this._edges.push(key);
-            ArrowLine._edgeMap.set(key, this);
-
-            col = nextCol;
-            row = nextRow;
         }
-
-        this.headCol = col;
-        this.headRow = row;
-        this.images.reverse();  // [0] = 头
     }
 
     // =========================================================================
-    // fly — 逐格飞出，带碰撞检测
+    // advance — 前进（两阶段算法：移动 + 标箭头）
     // =========================================================================
-    fly() {
-        if (!this.alive || this._flying) return;
-        this._flying = true;
+    advance() {
+        if (this._moving) return;
+        this._moving = true;
 
         const d = DIR_MAP[this.flyDir];
-        const stepDist = CONFIG.MATRIX.SPACING;
         const stepMs = CONFIG.ARROW_LINE.STEP_DURATION;
-        const cx = this.container.x;
-        const cy = this.container.y;
 
         const tick = () => {
-            if (this.images.length === 0) return;
+            if (this.steps.length === 0) return;
 
-            // ---- 碰撞检测：头的下一格边是否被占？ ----
-            const nextCol = this.headCol + d.dx;
-            const nextRow = this.headRow + d.dy;
-            const nextKey = edgeKey(this.headCol, this.headRow, nextCol, nextRow);
-            const owner = ArrowLine._edgeMap.get(nextKey);
+            const oldHead = this.steps[0];
+            const oldTail = this.steps[this.steps.length - 1];
 
-            if (owner && owner !== this && owner.images.length > 0) {
-                this._onCollision(owner);
+            const newEndCol = oldHead.endCol + d.dx;
+            const newEndRow = oldHead.endRow + d.dy;
+
+            // ===== ① 碰撞检测：向 DotMatrix 查询新头部端点是否被占 =====
+            const blocker = this.dotMatrix.getOccupant(newEndCol, newEndRow);
+            if (blocker && blocker !== this) {
+                this._onOverlap(blocker);
                 return;
             }
 
-            // ---- 更新边注册表：去尾、加头 ----
-            const oldTailKey = this._edges.shift();
-            ArrowLine._edgeMap.delete(oldTailKey);
-            this._edges.push(nextKey);
-            ArrowLine._edgeMap.set(nextKey, this);
-            this.headCol = nextCol;
-            this.headRow = nextRow;
+            // ===== ② 占用新头部端点 =====
+            this.dotMatrix.occupy(newEndCol, newEndRow, this);
 
-            // ---- 快照 → 销毁 → 重生 ----
-            const old = this.images.map(img => ({
-                x: img.x, y: img.y, angle: img.angle, texture: img.texture.key,
-            }));
+            // ===== ③ 移动：头进尾缩 =====
+            const newHead = new Step(
+                oldHead.endCol, oldHead.endRow,
+                newEndCol, newEndRow,
+                this.flyDir, true, this._DIR
+            );
+            this.steps.pop();
+            this.steps.unshift(newHead);
+            this.headCol = newEndCol;
+            this.headRow = newEndRow;
 
-            this.images.forEach(img => img.destroy());
-            this.images = [];
+            // ===== ④ 释放旧尾部起点 =====
+            this.dotMatrix.release(oldTail.startCol, oldTail.startRow, this);
 
-            const newHead = this.scene.add.image(
-                old[0].x + stepDist * d.dx,
-                old[0].y + stepDist * d.dy,
-                old[0].texture
-            ).setAngle(old[0].angle).setInteractive({ useHandCursor: true });
-            newHead.on('pointerdown', () => this.fly());
-            this.container.add(newHead);
-            this.images.push(newHead);
-
-            for (let i = 1; i < old.length; i++) {
-                const prev = old[i - 1];
-                const seg = this.scene.add.image(prev.x, prev.y, 'segment')
-                    .setAngle(prev.angle)
-                    .setInteractive({ useHandCursor: true });
-                seg.on('pointerdown', () => this.fly());
-                this.container.add(seg);
-                this.images.push(seg);
+            // ===== ⑤ 标箭头 =====
+            this.steps[0].texture = 'arrow';
+            for (let i = 1; i < this.steps.length; i++) {
+                this.steps[i].texture = 'segment';
             }
 
-            // 标签跟随头
+            // ===== ⑥ 重绘 =====
+            this.images.forEach(img => img.destroy());
+            this.images = [];
+            this._buildImages(this._toX, this._toY);
             if (this._labelImg) { this._labelImg.destroy(); this._labelImg = null; }
-            if (ArrowLine.DEV && this._label) this._makeLabel();
+            if (ArrowLine.DEV && this.label) this._makeLabel(this._toX, this._toY);
 
-            // ---- 尾巴离开屏幕 → 整线销毁 ----
-            const tail = this.images[this.images.length - 1];
-            const wx = tail.x + cx;
-            const wy = tail.y + cy;
-
-            if (wx < -50 || wx > CONFIG.GAME.WIDTH + 50 ||
-                wy < -50 || wy > CONFIG.GAME.HEIGHT + 50) {
+            // ===== ⑦ 结束：尾离开点阵 =====
+            const tail = this.steps[this.steps.length - 1];
+            if (!this._inside(tail.startCol, tail.startRow) &&
+                !this._inside(tail.endCol, tail.endRow)) {
                 this._dispose();
                 return;
             }
@@ -195,66 +222,149 @@ class ArrowLine {
     }
 
     // =========================================================================
-    // _onCollision — 撞到别的线：自己永久红 → 对方闪烁 → 自己弹回尾巴点
+    // retreat — 后退到指定点，不传参则回初始尾巴点
     // =========================================================================
-    _onCollision(blocker) {
-        // 自己：立刻变红，永久保持
-        this.images.forEach(img => img.setTintFill(0xff4444));
-        this.alive = false;  // 永久禁用点击
-
-        // 被碰的：闪烁 0.5s 后恢复
-        let visible = true;
-        const blinkTimer = this.scene.time.addEvent({
-            delay: 150,
-            loop: true,
-            callback: () => {
-                visible = !visible;
-                if (visible) {
-                    blocker.images.forEach(img => img.setTintFill(0xff4444));
-                } else {
-                    blocker.images.forEach(img => img.clearTint());
-                }
-            },
-        });
-
-        this.scene.time.delayedCall(500, () => {
-            blinkTimer.remove();
-            blocker.images.forEach(img => img.clearTint());
-        });
-
-        // 0.8s 后复位位置（颜色保持红）
-        this.scene.time.delayedCall(800, () => this._reset());
+    retreat(targetCol, targetRow) {
+        if (this._moving) return;
+        this._moving = true;
+        const tc = targetCol ?? this.tailCol;
+        const tr = targetRow ?? this.tailRow;
+        this._retreat(tc, tr);
     }
 
     // =========================================================================
-    // _reset — 弹回尾巴点，重建图像（红保持不变）
+    // _retreat — 后退到目标点
     // =========================================================================
-    _reset() {
-        // 注销旧边
-        for (const key of this._edges) {
-            ArrowLine._edgeMap.delete(key);
+    _retreat(targetCol, targetRow) {
+        const stepMs = CONFIG.ARROW_LINE.STEP_DURATION;
+
+        const tick = () => {
+            if (this.steps.length === 0) return;
+
+            const tail = this.steps[this.steps.length - 1];
+            if (tail.startCol === targetCol && tail.startRow === targetRow) return;
+
+            const d = DIR_MAP[tail.dir];
+            const oldHead = this.steps[0];
+
+            const newTail = new Step(
+                tail.startCol - d.dx, tail.startRow - d.dy,
+                tail.startCol, tail.startRow,
+                tail.dir, false, this._DIR
+            );
+
+            // ① 释放旧头部的起点（该点不再被任何步覆盖）
+            this.dotMatrix.release(oldHead.startCol, oldHead.startRow, this);
+
+            // ② 占用新尾部的起点（不检查冲突，撤退只走自己的旧领地）
+            this.dotMatrix.occupy(newTail.startCol, newTail.startRow, this);
+
+            // ③ 移动：去头加尾
+            this.steps.shift();
+            this.steps.push(newTail);
+            this.tailCol = newTail.startCol;
+            this.tailRow = newTail.startRow;
+
+            this.steps[0].texture = 'arrow';
+            for (let i = 1; i < this.steps.length; i++) this.steps[i].texture = 'segment';
+
+            this.headCol = this.steps[0].endCol;
+            this.headRow = this.steps[0].endRow;
+
+            this.images.forEach(img => img.destroy());
+            this.images = [];
+            this._buildImages(this._toX, this._toY);
+            if (this._labelImg) { this._labelImg.destroy(); this._labelImg = null; }
+            if (ArrowLine.DEV && this.label) this._makeLabel(this._toX, this._toY);
+
+            this.scene.time.delayedCall(stepMs, tick);
+        };
+
+        tick();
+    }
+
+    // =========================================================================
+    // _onOverlap — 撞到别人
+    // =========================================================================
+    _onOverlap(blocker) {
+        this._moving = false;
+        this.images.forEach(img => img.setTintFill(0xff4444));
+        blocker._onHit();
+        this._retreat(this.tailCol, this.tailRow);
+    }
+
+    // =========================================================================
+    // _onHit — 被别人撞
+    // =========================================================================
+    _onHit() {
+        this.images.forEach(img => img.setTintFill(0xff4444));
+
+        const holdMs = 300;
+        const fadeMs = 1000;
+
+        this.scene.time.delayedCall(holdMs, () => {
+            const dummy = { t: 0 };
+            this.scene.tweens.add({
+                targets: dummy,
+                t: 1,
+                duration: fadeMs,
+                ease: 'Sine.easeOut',
+                onUpdate: () => {
+                    const r = Math.round(0xff - dummy.t * (0xff - 0x1A));
+                    const g = Math.round(0x44 - dummy.t * (0x44 - 0x1A));
+                    const b = Math.round(0x44 - dummy.t * (0x44 - 0x1A));
+                    const color = (r << 16) | (g << 8) | b;
+                    this.images.forEach(img => img.setTintFill(color));
+                },
+                onComplete: () => {
+                    this.images.forEach(img => img.clearTint());
+                },
+            });
+        });
+    }
+
+    // =========================================================================
+    // isInside
+    // =========================================================================
+    isInside() {
+        const maxCol = CONFIG.MATRIX.COLS - 1;
+        const maxRow = CONFIG.MATRIX.ROWS - 1;
+        for (const step of this.steps) {
+            if (!this._inside(step.startCol, step.startRow, maxCol, maxRow)) return false;
+            if (!this._inside(step.endCol, step.endRow, maxCol, maxRow)) return false;
         }
-        this._edges = [];
+        return true;
+    }
 
-        // 销毁图像
-        this.images.forEach(img => img.destroy());
-        this.images = [];
-
-        // 用 TO/X/Y/DIR 的初始值重建
-        this._buildImages(this._toX, this._toY, this._DIR);
-
-        // 标签 + 红晕（永久）
-        if (ArrowLine.DEV && this._label) this._makeLabel();
-        this.images.forEach(img => img.setTintFill(0xff4444));
-        // _flying 保持 true，alive 保持 false，不再响应点击
+    _inside(col, row, maxCol = CONFIG.MATRIX.COLS - 1, maxRow = CONFIG.MATRIX.ROWS - 1) {
+        return col >= 0 && col <= maxCol && row >= 0 && row <= maxRow;
     }
 
     // =========================================================================
-    // _makeLabel — 在头位置打开发标签
+    // isOverlapping — 检查本线是否与任何其他线共享格点（委托给 DotMatrix）
     // =========================================================================
-    _makeLabel() {
-        const head = this.images[0];
-        this._labelImg = this.scene.add.text(head.x, head.y - 8, this._label, {
+    isOverlapping() {
+        const seen = new Set();
+        for (const step of this.steps) {
+            seen.add(`${step.startCol},${step.startRow}`);
+            seen.add(`${step.endCol},${step.endRow}`);
+        }
+        for (const key of seen) {
+            const [c, r] = key.split(',').map(Number);
+            const o = this.dotMatrix.getOccupant(c, r);
+            if (o && o !== this) return o;
+        }
+        return null;
+    }
+
+    // =========================================================================
+    // _makeLabel
+    // =========================================================================
+    _makeLabel(toX, toY) {
+        const head = this.steps[0];
+        const px = toX((head.startCol + head.endCol) / 2);
+        const py = toY((head.startRow + head.endRow) / 2);
+        this._labelImg = this.scene.add.text(px, py, this.label, {
             fontSize: '14px',
             color: '#ff4444',
             fontFamily: 'Arial, sans-serif',
@@ -266,14 +376,18 @@ class ArrowLine {
     }
 
     // =========================================================================
-    // _dispose — 飞出屏幕后彻底销毁
+    // _dispose — 飞出后彻底清理
     // =========================================================================
     _dispose() {
-        if (this._labelImg) { this._labelImg.destroy(); this._labelImg = null; }
-        for (const key of this._edges) {
-            ArrowLine._edgeMap.delete(key);
+        // 释放所有格点
+        for (const step of this.steps) {
+            this.dotMatrix.release(step.startCol, step.startRow, this);
+            this.dotMatrix.release(step.endCol, step.endRow, this);
         }
+        if (this._labelImg) { this._labelImg.destroy(); this._labelImg = null; }
         this.images.forEach(img => img.destroy());
         this.images = [];
+        this.steps = [];
+        ArrowLine._all = ArrowLine._all.filter(l => l !== this);
     }
 }
