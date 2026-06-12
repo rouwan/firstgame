@@ -88,22 +88,114 @@ class ArrowMatrixNew {
     // @returns {number} 总共生成的线数
     // =========================================================================
     generateAll(onProgress) {
-        let count = 0;
-        let failStreak = 0;
-        while (true) {
-            const line = this.generateOneLine();
-            if (line) {
-                count++;
-                failStreak = 0;
-                if (onProgress) onProgress(line, count);
-            } else if (this.isDone()) {
-                break;  // 无点/孤点 → 真正结束
-            } else {
-                failStreak++;
-                if (failStreak >= 50) break;  // 安全阀：连续失败太多，放弃
+        const MAX_ATTEMPTS = 20;
+
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+            // ① 生成
+            let count = 0;
+            let failStreak = 0;
+            while (true) {
+                const line = this.generateOneLine();
+                if (line) {
+                    count++;
+                    failStreak = 0;
+                    if (onProgress) onProgress(line, count);
+                } else if (this.isDone()) {
+                    break;
+                } else {
+                    failStreak++;
+                    if (failStreak >= 50) break;
+                }
+            }
+
+            if (count === 0) return 0;
+
+            // ② 校验：是否有解
+            if (this._isSolvable()) {
+                if (ArrowLine.DEV) console.log(`[ArrowMatrixNew] Solvable (attempt ${attempt + 1})`);
+                return count;
+            }
+
+            // ③ 无解 → 清空重来
+            if (ArrowLine.DEV) console.log(`[ArrowMatrixNew] Unsolvable, retry (${attempt + 1}/${MAX_ATTEMPTS})`);
+            this._clearAll();
+        }
+
+        // 超过重试上限，最终一次不校验直接返回（至少给玩家一个阵玩）
+        if (ArrowLine.DEV) console.log('[ArrowMatrixNew] Max retries exceeded, returning as-is');
+        return this.lines.length;
+    }
+
+    // =========================================================================
+    // _isSolvable — 构建依赖图，拓扑排序检查是否有环
+    //
+    // 依赖定义：从 A 的头尖点沿 flyDir 逐格走，第一个碰到的其他线 B
+    //          → A 依赖 B（B 必须先飞才能给 A 让路）
+    //
+    // 环 = 无解。DAG = 有至少一种合法发射顺序。
+    // =========================================================================
+    _isSolvable() {
+        if (this.lines.length <= 1) return true;
+
+        // ① 构建依赖图：A 依赖 B 表示 B 必须先飞
+        const n = this.lines.length;
+        const deps = [];       // deps[i] = [j, ...]  i 依赖 j
+        const revDeps = [];    // revDeps[i] = [k, ...]  k 依赖 i（反向索引）
+
+        for (let i = 0; i < n; i++) {
+            deps.push([]);
+            revDeps.push([]);
+        }
+
+        for (let ai = 0; ai < n; ai++) {
+            const A = this.lines[ai];
+            const d = DIR_MAP[A.flyDir];
+            let c = A.headCol + d.dx;
+            let r = A.headRow + d.dy;
+            while (this.dotMatrix.inside(c, r)) {
+                const occupant = this.dotMatrix.getOccupant(c, r);
+                if (occupant && occupant !== A) {
+                    const bi = this.lines.indexOf(occupant);
+                    if (bi !== -1) {
+                        deps[ai].push(bi);
+                        revDeps[bi].push(ai);
+                    }
+                    break;
+                }
+                c += d.dx;
+                r += d.dy;
             }
         }
-        return count;
+
+        // ② 拓扑排序（Kahn 算法）
+        const indegree = deps.map(d => d.length);
+        const queue = [];
+        for (let i = 0; i < n; i++) {
+            if (indegree[i] === 0) queue.push(i);
+        }
+
+        let visited = 0;
+        while (queue.length > 0) {
+            const node = queue.shift();
+            visited++;
+            // node 被移除 → 依赖 node 的那些线（反向依赖）入度 -1
+            for (const dependent of revDeps[node]) {
+                indegree[dependent]--;
+                if (indegree[dependent] === 0) queue.push(dependent);
+            }
+        }
+
+        return visited === n;
+    }
+
+    // =========================================================================
+    // _clearAll — 清空所有线，重置点阵
+    // =========================================================================
+    _clearAll() {
+        for (const line of this.lines.slice()) {
+            line._dispose();
+        }
+        this.lines = [];
     }
 
     // =========================================================================
