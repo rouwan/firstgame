@@ -34,6 +34,11 @@ class DotMatrixNew {
                 this.grid[row][col] = { image: null, owner: null };
             }
         }
+
+        // 区域过滤器：非 null 时 getAvailablePoints/Neighbors 只返回区域内格点
+        this._regionFilter = null;  // Set of "col,row" strings
+        // 射线预留：本轮次前序线的射线经过的空格，后序线不得占用
+        this._reservedSet = null;   // Set of "col,row" strings
     }
 
     // =========================================================================
@@ -68,12 +73,15 @@ class DotMatrixNew {
         return this.grid[row][col].owner;
     }
 
-    /** 返回所有未被占用的格点 */
+    /** 返回所有未被占用的格点（排除预留） */
     getAvailablePoints() {
         const points = [];
         for (let row = 0; row < this.rows; row++) {
             for (let col = 0; col < this.cols; col++) {
-                if (!this.grid[row][col].owner) {
+                const key = `${col},${row}`;
+                const inRegion = !this._regionFilter || this._regionFilter.has(key);
+                const notReserved = !this._reservedSet || !this._reservedSet.has(key);
+                if (!this.grid[row][col].owner && inRegion && notReserved) {
                     points.push({ col, row });
                 }
             }
@@ -103,7 +111,10 @@ class DotMatrixNew {
         for (const d of dirs) {
             const nc = col + d.dc;
             const nr = row + d.dr;
-            if (this.inside(nc, nr) && !this.grid[nr][nc].owner) {
+            const nk = `${nc},${nr}`;
+            const inRegion = !this._regionFilter || this._regionFilter.has(nk);
+            const notReserved = !this._reservedSet || !this._reservedSet.has(nk);
+            if (this.inside(nc, nr) && inRegion && notReserved && !this.grid[nr][nc].owner) {
                 results.push({ col: nc, row: nr, dir: d.dir });
             }
         }
@@ -136,5 +147,51 @@ class DotMatrixNew {
         if (cell.owner === line) {
             cell.owner = null;
         }
+    }
+
+    // =========================================================================
+    // getEmptyRegions — BFS 找所有空区域（四方向连通分量）
+    // @returns {Array<{cells: [{col,row},...], size: number}>}
+    // =========================================================================
+    getEmptyRegions() {
+        const visited = new Set();
+        const regions = [];
+
+        for (let row = 0; row < this.rows; row++) {
+            for (let col = 0; col < this.cols; col++) {
+                const key = `${col},${row}`;
+                if (visited.has(key)) continue;
+                if (this.grid[row][col].owner) continue;
+                // 区域过滤
+                if (this._regionFilter && !this._regionFilter.has(key)) continue;
+
+                const queue = [{ col, row }];
+                const cells = [];
+                while (queue.length > 0) {
+                    const cur = queue.shift();
+                    const ck = `${cur.col},${cur.row}`;
+                    if (visited.has(ck)) continue;
+                    visited.add(ck);
+                    cells.push({ col: cur.col, row: cur.row });
+
+                    const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+                    for (const [dc, dr] of dirs) {
+                        const nc = cur.col + dc;
+                        const nr = cur.row + dr;
+                        const nk = `${nc},${nr}`;
+                        // 区域过滤 + 常规检查
+                        if (this._regionFilter && !this._regionFilter.has(nk)) continue;
+                        if (this.inside(nc, nr) && !visited.has(nk) && !this.grid[nr][nc].owner) {
+                            queue.push({ col: nc, row: nr });
+                        }
+                    }
+                }
+
+                regions.push({ cells, size: cells.length });
+            }
+        }
+
+        regions.sort((a, b) => b.size - a.size);
+        return regions;
     }
 }

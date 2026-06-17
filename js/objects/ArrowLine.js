@@ -47,21 +47,29 @@ class ArrowLine {
     static DEV = true;
     static _all = [];
 
-    constructor(scene, container, dotMatrix, tailCol, tailRow, path, toX, toY, DIR, label = '') {
+    /**
+     * @param {function} [onEvent] — 事件回调 (type, detail) => void
+     */
+    constructor(scene, container, dotMatrix, tailCol, tailRow, path, toX, toY, DIR, label = '', onEvent) {
         this.scene = scene;
         this.container = container;
         this.dotMatrix = dotMatrix;
+        this._onEvent = onEvent;  // 日志上报回调
 
         // ======== 核心数据 ========
         this.tailCol = tailCol;
         this.tailRow = tailRow;
         this.path    = path;
         this.label   = label;
+        this._round  = '';   // 所属批次号（如 "1", "1-2"），log 用
 
         // ======== 保存坐标映射 ========
         this._toX = toX;
         this._toY = toY;
         this._DIR = DIR;
+
+        // ======== 撤退方向栈: advance 弹掉的 step 方向入栈, retreat 逆序取出 ========
+        this._retreatDirs = [];
 
         // ======== ① 展开：路径 → Step[] ========
         this.steps = this._expand(tailCol, tailRow, path, DIR);
@@ -158,8 +166,12 @@ class ArrowLine {
         if (this._moving) return;
         this._moving = true;
 
-        const d = DIR_MAP[this.flyDir];
+        // 上报玩家点击（一次点击，后续自动巡航的 advance 步与之区分）
+        if (this._onEvent) this._onEvent('click', {});
+
         const stepMs = CONFIG.ARROW_LINE.STEP_DURATION;
+
+        const d = DIR_MAP[this.flyDir];
 
         const tick = () => {
             if (this.steps.length === 0) return;
@@ -170,9 +182,14 @@ class ArrowLine {
             const newEndCol = oldHead.endCol + d.dx;
             const newEndRow = oldHead.endRow + d.dy;
 
-            // ===== ① 碰撞检测：向 DotMatrix 查询新头部端点是否被占 =====
+            // ===== ① 碰撞检测：只与静止线碰撞（飞行中的线不算障碍）=====
             const blocker = this.dotMatrix.getOccupant(newEndCol, newEndRow);
-            if (blocker && blocker !== this) {
+            if (blocker && blocker !== this && !blocker._moving) {
+                if (this._onEvent) this._onEvent('collision', {
+                    blocker: blocker.label,
+                    headCol: newEndCol,
+                    headRow: newEndRow,
+                });
                 this._onOverlap(blocker);
                 return;
             }
@@ -187,6 +204,7 @@ class ArrowLine {
                 this.flyDir, true, this._DIR
             );
             this.steps.pop();
+            this._retreatDirs.push(oldTail.dir);  // 记下弹掉的方向，供撤退逆序使用
             this.steps.unshift(newHead);
             this.headCol = newEndCol;
             this.headRow = newEndRow;
@@ -207,10 +225,21 @@ class ArrowLine {
             if (this._labelImg) { this._labelImg.destroy(); this._labelImg = null; }
             if (ArrowLine.DEV && this.label) this._makeLabel(this._toX, this._toY);
 
+            // 上报 advance 事件
+            const newTail = this.steps[this.steps.length - 1];
+            if (this._onEvent) this._onEvent('advance', {
+                headBefore: [oldHead.endCol, oldHead.endRow],
+                headAfter: [newEndCol, newEndRow],
+                tailBefore: [oldTail.startCol, oldTail.startRow],
+                tailAfter: [newTail.startCol, newTail.startRow],
+                dir: this.flyDir,
+            });
+
             // ===== ⑦ 结束：尾离开点阵 =====
             const tail = this.steps[this.steps.length - 1];
             if (!this._inside(tail.startCol, tail.startRow) &&
                 !this._inside(tail.endCol, tail.endRow)) {
+                if (this._onEvent) this._onEvent('dispose', {});
                 this._dispose();
                 return;
             }
@@ -236,21 +265,24 @@ class ArrowLine {
     // _retreat — 后退到目标点
     // =========================================================================
     _retreat(targetCol, targetRow) {
+        this._moving = true;  // 锁住，防止 advance 与 retreat 同时跑
         const stepMs = CONFIG.ARROW_LINE.STEP_DURATION;
 
         const tick = () => {
-            if (this.steps.length === 0) return;
+            if (this.steps.length === 0) { this._moving = false; return; }
 
             const tail = this.steps[this.steps.length - 1];
-            if (tail.startCol === targetCol && tail.startRow === targetRow) return;
+            if (tail.startCol === targetCol && tail.startRow === targetRow) { this._moving = false; return; }
 
-            const d = DIR_MAP[tail.dir];
+            // 撤退方向: 优先从栈取(还原advance弹掉的step), 栈空则用当前尾部方向
+            const dirKey = this._retreatDirs.length > 0 ? this._retreatDirs.pop() : tail.dir;
+            const d = DIR_MAP[dirKey];
             const oldHead = this.steps[0];
 
             const newTail = new Step(
                 tail.startCol - d.dx, tail.startRow - d.dy,
                 tail.startCol, tail.startRow,
-                tail.dir, false, this._DIR
+                dirKey, false, this._DIR
             );
 
             // ① 释放旧头部的起点（该点不再被任何步覆盖）
@@ -276,6 +308,16 @@ class ArrowLine {
             this._buildImages(this._toX, this._toY);
             if (this._labelImg) { this._labelImg.destroy(); this._labelImg = null; }
             if (ArrowLine.DEV && this.label) this._makeLabel(this._toX, this._toY);
+
+            // 上报 retreat 事件
+            const newHead = this.steps[0];
+            if (this._onEvent) this._onEvent('retreat', {
+                headBefore: [oldHead.endCol, oldHead.endRow],
+                headAfter: [newHead.endCol, newHead.endRow],
+                tailBefore: [tail.startCol, tail.startRow],
+                tailAfter: [newTail.startCol, newTail.startRow],
+                dir: tail.dir,
+            });
 
             this.scene.time.delayedCall(stepMs, tick);
         };
@@ -388,6 +430,7 @@ class ArrowLine {
         this.images.forEach(img => img.destroy());
         this.images = [];
         this.steps = [];
+        this._retreatDirs = [];
         ArrowLine._all = ArrowLine._all.filter(l => l !== this);
     }
 }

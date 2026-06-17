@@ -1,0 +1,4 @@
+- [DAG 循环依赖问题](memory/2026-06-15-dag-cycle-issue.md) — 已解决：序列逆序构造法 + 递归分治填空
+- [边界安全模型](memory/2026-06-16-boundary-model.md) — 前轮占据点作为后轮边界的递归套娃模型
+- [优势与缺陷](memory/my-strengths-and-weaknesses.md) — 执行快/理解快，但需缩规模/主动术语沉淀/不自寻玩法
+- [协作远景](memory/collaboration-vision.md) — 从执行者升级到涵盖产品/项目/复盘的多面手

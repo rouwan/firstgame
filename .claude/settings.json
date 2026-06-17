@@ -1,8 +1,13 @@
 {
+  "alwaysThinkingEnabled": false,
   "permissions": {
     "allow": [
       "Edit(h:\\workspace\\gameDev\\firstgame\\*)",
       "Write(h:\\workspace\\gameDev\\firstgame\\*)",
+      "WebSearch",
+      "WebFetch",
+      "Grep",
+      "Glob",
       "Bash(cat *)",
       "Bash(ls *)",
       "Bash(mkdir *)",
