@@ -48,8 +48,13 @@ class ArrowMatrixNew {
         this.initialSnapshot = null;
         this._stats = { clicks: 0, advances: 0, retreats: 0, collisions: 0, disposals: 0 };
 
+        // ======== 实验：线信息日志 ========
+        this._lineLog = [];   // [{ label, flyDir, head, adj, tail, body, green, blue, orange }]
+
         // ======== 分步生成状态 ========
         this._genState = 'idle';          // 'idle' | 'generating'
+        this._phase = 0;                  // 1=线1, 2=线2前序, 3=线3边界+向内走
+        this._typeCount = { '1': 0, '2': 0, '3': 0 };
         this._genPass = 0;                // 当前轮次 1,2,3...
         this._genRegionIdx = 0;           // 当前区域内序号
         this._genAlreadyPlaced = null;    // Set of labels
@@ -996,6 +1001,394 @@ class ArrowMatrixNew {
             if (neighbors.length > 0) return false;  // 还有可用的起点
         }
         return true;  // 全是孤点
+    }
+
+    // =========================================================================
+    // _highlightAdjacent — 绿=箭头候选，蓝=邻点候选，橙=不可用
+    // =========================================================================
+    _highlightAdjacent(line, greenColor, blueColor) {
+        const bodySet = new Set();
+        const greenSet = new Set();       // "col,row" → true
+        const greenDir = new Map();       // "col,row" → [[dc,dr], ...]
+        const validSet = new Set();       // 有效绿格（能放邻格的）
+        this._highlightData = { body: [], green: [], blue: [], orange: [], candidates: [] };
+        for (const s of line.steps) {
+            bodySet.add(`${s.startCol},${s.startRow}`); bodySet.add(`${s.endCol},${s.endRow}`);
+            this._highlightData.body.push([s.startCol, s.startRow], [s.endCol, s.endRow]);
+        }
+
+        // 所有前辈线的身体集合（绿格 + 射线检查共用）
+        const allBodySet = new Set(bodySet);
+        for (const l of this.lines) {
+            if (l === line) continue;
+            for (const s of l.steps) {
+                allBodySet.add(`${s.startCol},${s.startRow}`);
+                allBodySet.add(`${s.endCol},${s.endRow}`);
+            }
+        }
+
+        // 绿格从所有前辈线身体计算（不只是当前线）
+        const bodyForGreen = this.lines.length <= 1 ? bodySet : allBodySet;
+
+        // 第一遍：涂绿 + 记方向（用所有前辈线身体）
+        for (const k of bodyForGreen) {
+            const [c, r] = k.split(',').map(Number);
+            const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+            for (const [dc, dr] of dirs) {
+                const nc = c + dc, nr = r + dr;
+                if (!this.dotMatrix.inside(nc, nr)) continue;
+                if (bodyForGreen.has(`${nc},${nr}`)) continue;
+                if (this.dotMatrix.getOccupant(nc, nr)) continue;
+                const gk = `${nc},${nr}`;
+                greenSet.add(gk);
+                if (!greenDir.has(gk)) greenDir.set(gk, []);
+                greenDir.get(gk).push([dc, dr]);
+                this._highlightData.green.push([nc, nr]);
+                const img = this.dotMatrix.grid[nr][nc].image;
+                if (img) img.setTint(greenColor);
+            }
+        }
+
+        // 第二遍：有效绿格 = 邻点可用 + 射线全是线1身体（无空点）
+        for (const [gk, dirs] of greenDir) {
+            const [gc, gr] = gk.split(',').map(Number);
+            for (const [dc, dr] of dirs) {
+                const bc = gc + dc, br = gr + dr;
+                if (!this.dotMatrix.inside(bc, br)) continue;
+                if (bodyForGreen.has(`${bc},${br}`)) continue;
+                if (this.dotMatrix.getOccupant(bc, br)) continue;
+
+                // 射线全扫描：从箭头点沿 flyDir(-dc,-dr) 逐格走，必须全是前序线身体
+                const fdx = -dc, fdy = -dr;
+                let rc = gc + fdx, rr = gr + fdy;
+                let allBody = true;
+                while (this.dotMatrix.inside(rc, rr)) {
+                    if (!allBodySet.has(`${rc},${rr}`)) { allBody = false; break; }
+                    rc += fdx; rr += fdy;
+                }
+                if (!allBody) continue;
+
+                validSet.add(gk);
+                const flyDir = fdx === 1 ? 'right' : fdx === -1 ? 'left' : fdy === 1 ? 'down' : 'up';
+                this._highlightData.candidates.push({ head: [gc, gr], adj: [bc, br], flyDir });
+                if (!greenSet.has(`${bc},${br}`)) {
+                    this._highlightData.blue.push([bc, br]);
+                    const img = this.dotMatrix.grid[br][bc].image;
+                    if (img) img.setTint(blueColor);
+                }
+                break;
+            }
+        }
+
+        // 第三遍：无效绿格 → 涂橙
+        for (const gk of greenSet) {
+            if (!validSet.has(gk)) {
+                const [gc, gr] = gk.split(',').map(Number);
+                this._highlightData.orange.push([gc, gr]);
+                const img = this.dotMatrix.grid[gr][gc].image;
+                if (img) img.setTint(0xff8800);
+            }
+        }
+    }
+
+    // =========================================================================
+    // dump — 导出完整点阵 + 所有线信息
+    // =========================================================================
+    dump() {
+        // 点阵状态
+        const grid = [];
+        for (let r = 0; r < this.rows; r++) {
+            grid[r] = [];
+            for (let c = 0; c < this.cols; c++) {
+                const occ = this.dotMatrix.getOccupant(c, r);
+                grid[r][c] = occ ? { owner: occ.label } : null;
+            }
+        }
+        return {
+            config: { cols: this.cols, rows: this.rows, spacing: this.spacing },
+            totalLines: this.lines.length,
+            grid: grid,
+            lines: this._lineLog,
+        };
+    }
+
+    dumpLine1() { return this.dump(); }
+
+    // =========================================================================
+    // generateLine1 — 三定点：箭头点(边界) + 邻点(内侧) + 尾巴(随机)，BFS
+    // =========================================================================
+    // =========================================================================
+    // generateNextLine — 内部单条生成（按当前 phase 决定类型）
+    // =========================================================================
+    generateNextLine() {
+        if (this._phase === 2 && this._highlightData?.candidates?.length > 0) {
+            const line = this._generateSingleLine('2');
+            if (line) { this._highlightAdjacent(line, 0x44ff44, 0x4488ff); return line; }
+        }
+        if (this._phase === 3) {
+            const line = this._generateSingleLine('3');
+            if (line) { this._highlightAdjacent(line, 0x44ff44, 0x4488ff); return line; }
+        }
+        if (this._phase <= 1) {
+            const line = this._generateSingleLine('1');
+            if (line) { this._highlightAdjacent(line, 0x44ff44, 0x4488ff); return line; }
+        }
+        return null;
+    }
+
+    // =========================================================================
+    // generateNextBatch — 三阶段交替：1→2→3→1→...
+    // =========================================================================
+    generateNextBatch(phase) {
+        const count = CONFIG.ARROW_MATRIX.LINE1_COUNT || 6;
+
+        if (phase === 1) {
+            let made = 0;
+            for (let i = 0; i < count; i++) { if (this._generateSingleLine('1')) made++; }
+            const lastLine = this.lines[this.lines.length - 1];
+            if (lastLine) this._highlightAdjacent(lastLine, 0x44ff44, 0x4488ff);
+            console.log(`[线1] ${made}/${count}`);
+            return made > 0 ? '1' : null;
+        }
+        if (phase === 2) {
+            let made = 0;
+            while (this._highlightData?.candidates?.length > 0) {
+                const line = this._generateSingleLine('2');
+                if (!line) break;
+                this._highlightAdjacent(line, 0x44ff44, 0x4488ff);
+                made++;
+            }
+            console.log(`[线2] ${made}条`);
+            return made > 0 ? '2' : null;
+        }
+        if (phase === 3) {
+            let made = 0;
+            for (let i = 0; i < count; i++) { if (this._generateSingleLine('3')) made++; }
+            const lastLine = this.lines[this.lines.length - 1];
+            if (lastLine && made > 0) this._highlightAdjacent(lastLine, 0x44ff44, 0x4488ff);
+            console.log(`[线3] ${made}/${count}`);
+            return made > 0 ? '3' : null;
+        }
+        if (phase === 4) {
+            let made = 0;
+            const regions = this.dotMatrix.getEmptyRegions();
+            for (const region of regions) {
+                if (region.size < 2) continue;
+                if (!this._typeCount['4']) this._typeCount['4'] = 0;
+                this._typeCount['4']++;
+                const label = `4-${this._typeCount['4']}`;
+                // BFS 从第一个空格到最后一个空格
+                const from = region.cells[0];
+                const to = region.cells[region.cells.length - 1];
+                const cells = this._bfsPath(from, to);
+                if (!cells) continue;
+                const path = this._cellsToPath(cells);
+                if (path.length === 0) continue;
+                this._createLine(label, from.col, from.row, path, from, to, 'down');
+                made++;
+            }
+            console.log(`[线4] 清场${made} 条`);
+            return made > 0 ? '4' : null;
+        }
+        return null;
+    }
+
+    // =========================================================================
+    // _generateSingleLine — type: '1'=边界+BFS, '2'=前序绿格, '3'=边界+向内走
+    // =========================================================================
+    _generateSingleLine(type) {
+        if (!this._typeCount[type]) this._typeCount[type] = 0;
+        this._typeCount[type]++;
+        const label = `${type}-${this._typeCount[type]}`;
+        let candidates = [];
+
+        if (type === '2') {
+            // 线2：前序线绿格候选
+            const data = this._highlightData;
+            if (!data?.candidates?.length) { console.log(`[${label}] 无候选`); return null; }
+            for (const c of data.candidates) {
+                candidates.push({ head: { col: c.head[0], row: c.head[1] }, adj: { col: c.adj[0], row: c.adj[1] }, flyDir: c.flyDir });
+            }
+        } else {
+            // 线1 / 线3：边界空格 + 内侧邻点
+            for (let c = 0; c < this.cols; c++) {
+                if (!this.dotMatrix.getOccupant(c, 0)) { const adj = { col: c, row: 1 }; if (this.dotMatrix.inside(adj.col, adj.row) && !this.dotMatrix.getOccupant(adj.col, adj.row)) candidates.push({ head: { col: c, row: 0 }, adj, flyDir: 'up' }); }
+                if (!this.dotMatrix.getOccupant(c, this.rows - 1)) { const adj = { col: c, row: this.rows - 2 }; if (this.dotMatrix.inside(adj.col, adj.row) && !this.dotMatrix.getOccupant(adj.col, adj.row)) candidates.push({ head: { col: c, row: this.rows - 1 }, adj, flyDir: 'down' }); }
+            }
+            for (let r = 0; r < this.rows; r++) {
+                if (!this.dotMatrix.getOccupant(0, r)) { const adj = { col: 1, row: r }; if (this.dotMatrix.inside(adj.col, adj.row) && !this.dotMatrix.getOccupant(adj.col, adj.row)) candidates.push({ head: { col: 0, row: r }, adj, flyDir: 'left' }); }
+                if (!this.dotMatrix.getOccupant(this.cols - 1, r)) { const adj = { col: this.cols - 2, row: r }; if (this.dotMatrix.inside(adj.col, adj.row) && !this.dotMatrix.getOccupant(adj.col, adj.row)) candidates.push({ head: { col: this.cols - 1, row: r }, adj, flyDir: 'right' }); }
+            }
+        }
+        if (candidates.length === 0) { console.log(`[${label}] 无候选`); return null; }
+
+        if (type === '3') return this._buildLine3(label, candidates);
+        return this._buildLineBFSTail(label, candidates);
+    }
+
+    // =========================================================================
+    // _buildLineBFSTail — BFS 尾巴到邻点（线1/线2 共用）
+    // =========================================================================
+    _buildLineBFSTail(label, candidates) {
+        const tails = [];
+        for (let r = 0; r < this.rows; r++)
+            for (let c = 0; c < this.cols; c++)
+                if (!this.dotMatrix.getOccupant(c, r)) tails.push({ col: c, row: r });
+        if (tails.length < 2) { console.log(`[${label}] 空格不足`); return null; }
+
+        for (let attempt = 0; attempt < 200; attempt++) {
+            const h = candidates[Math.floor(Math.random() * candidates.length)];
+            const tail = tails[Math.floor(Math.random() * tails.length)];
+            if ((tail.col === h.head.col && tail.row === h.head.row) || (tail.col === h.adj.col && tail.row === h.adj.row)) continue;
+            const excludeSet = new Set([`${h.head.col},${h.head.row}`]);
+            const cells = this._bfsPath(tail, h.adj, excludeSet);
+            if (!cells) continue;
+            cells.push({ col: h.head.col, row: h.head.row });
+            const path = this._cellsToPath(cells);
+            if (path.length === 0) continue;
+            return this._createLine(label, h.adj.col, h.adj.row, path, tail, h.head, h.flyDir);
+        }
+        console.log(`[${label}] BFS 200 次未通`);
+        return null;
+    }
+
+    // =========================================================================
+    // _buildLine3 — 线3：从邻点向内随机游走，直到无空格
+    // =========================================================================
+    _buildLine3(label, candidates) {
+        for (let attempt = 0; attempt < 200; attempt++) {
+            const h = candidates[Math.floor(Math.random() * candidates.length)];
+            const walkCells = [{ col: h.adj.col, row: h.adj.row }];
+            const visited = new Set([`${h.head.col},${h.head.row}`, `${h.adj.col},${h.adj.row}`]);
+            let cur = { col: h.adj.col, row: h.adj.row };
+            // 从邻点向内随机走
+            while (true) {
+                const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+                const emptyNeighbors = [];
+                for (const [dc, dr] of dirs) {
+                    const nc = cur.col + dc, nr = cur.row + dr;
+                    if (this.dotMatrix.inside(nc, nr) && !visited.has(`${nc},${nr}`) && !this.dotMatrix.getOccupant(nc, nr)) {
+                        emptyNeighbors.push({ col: nc, row: nr });
+                    }
+                }
+                if (emptyNeighbors.length === 0) break;
+                const next = emptyNeighbors[Math.floor(Math.random() * emptyNeighbors.length)];
+                visited.add(`${next.col},${next.row}`);
+                walkCells.push(next);
+                cur = next;
+            }
+            // 路径：walkCells[0]=邻点 walkCells[last]=尾巴 → 从后往前建 path
+            walkCells.reverse();  // [尾巴, ..., 邻点]
+            walkCells.push({ col: h.head.col, row: h.head.row });  // 尾巴,...,邻点,头
+            const path = this._cellsToPath(walkCells);
+            if (path.length === 0) continue;
+            const tail = walkCells[0];  // 最内点 = 尾巴
+            return this._createLine(label, tail.col, tail.row, path, tail, h.head, h.flyDir);
+        }
+        console.log(`[${label}] 向内走 200 次未通`);
+        return null;
+    }
+
+    // =========================================================================
+    // _createLine — 创建 ArrowLine 并记录日志
+    // =========================================================================
+    _createLine(label, adjCol, adjRow, path, tail, head, flyDir) {
+        const line = new ArrowLine(this.scene, this.container, this.dotMatrix, tail.col, tail.row, path, this.toX, this.toY, this.DIR, label, null);
+        if (line.steps.length > 0) { this.dotMatrix.occupy(line.steps[0].endCol, line.steps[0].endRow, line); }
+        this.lines.push(line);
+        console.log(`[${label}] tail(${tail.col},${tail.row}) → adj(${adjCol},${adjRow}) → head(${head.col},${head.row}) flyDir=${flyDir}`);
+        const hd = this._highlightData || { body: [], green: [], blue: [], orange: [] };
+        this._lineLog.push({ label: line.label, flyDir: line.flyDir, head: [line.headCol, line.headRow], adj: [adjCol, adjRow], tail: [tail.col, tail.row], body: hd.body.slice(), green: hd.green.slice(), blue: hd.blue.slice(), orange: hd.orange.slice() });
+        return line;
+    }
+
+    // =========================================================================
+    // generateLine1 / generateLine2 — 兼容旧调用
+    // =========================================================================
+    generateLine1() { return this.lines.length === 0 ? this.generateNextLine() : null; }
+
+    // =========================================================================
+    // _tryGenerate — BFS 连接头尾，创建 ArrowLine
+    _tryGenerate(headCells, label) {
+        const allEmpty = [];
+        for (let r = 0; r < this.rows; r++)
+            for (let c = 0; c < this.cols; c++)
+                if (!this.dotMatrix.getOccupant(c, r)) allEmpty.push({ col: c, row: r });
+
+        for (let attempt = 0; attempt < 200; attempt++) {
+            const head = headCells[Math.floor(Math.random() * headCells.length)];
+            const tail = allEmpty[Math.floor(Math.random() * allEmpty.length)];
+            if (head.col === tail.col && head.row === tail.row) continue;
+
+            const cells = this._bfsPath(tail, head);
+            if (!cells) continue;
+
+            const path = this._cellsToPath(cells);
+            if (path.length === 0) continue;
+
+            const line = new ArrowLine(
+                this.scene, this.container, this.dotMatrix,
+                tail.col, tail.row, path,
+                this.toX, this.toY, this.DIR,
+                label, null
+            );
+            if (line.steps.length > 0) {
+                this.dotMatrix.occupy(line.steps[0].endCol, line.steps[0].endRow, line);
+            }
+            this.lines.push(line);
+            console.log(`[${label}] tail(${tail.col},${tail.row}) → head(${head.col},${head.row}) flyDir=${line.flyDir}`);
+            return line;
+        }
+        console.log(`[${label}] BFS 200 次未找到路径`);
+        return null;
+    }
+
+    // =========================================================================
+    // _bfsPath — 四方向 BFS 最短路径
+    // =========================================================================
+    _bfsPath(from, to, excludeCells = null) {
+        const visited = new Set();
+        const queue = [{ col: from.col, row: from.row, cells: [{ col: from.col, row: from.row }] }];
+        visited.add(`${from.col},${from.row}`);
+        while (queue.length > 0) {
+            const cur = queue.shift();
+            if (cur.col === to.col && cur.row === to.row) return cur.cells;
+            const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+            for (const [dc, dr] of dirs) {
+                const nc = cur.col + dc, nr = cur.row + dr;
+                const nk = `${nc},${nr}`;
+                if (!this.dotMatrix.inside(nc, nr)) continue;
+                if (visited.has(nk)) continue;
+                // 排除集合：BFS 不可穿越这些格子（防止路径穿过 head 导致自环）
+                if (excludeCells && excludeCells.has(nk)) continue;
+                if (this.dotMatrix.getOccupant(nc, nr)) continue;
+                visited.add(nk);
+                queue.push({ col: nc, row: nr, cells: [...cur.cells, { col: nc, row: nr }] });
+            }
+        }
+        return null;
+    }
+
+    // =========================================================================
+    // _cellsToPath — 格子序列 → [{dir, count}]
+    // =========================================================================
+    _cellsToPath(cells) {
+        const path = [];
+        for (let i = 0; i < cells.length - 1; i++) {
+            const dc = cells[i + 1].col - cells[i].col;
+            const dr = cells[i + 1].row - cells[i].row;
+            let dir;
+            if (dc === 1) dir = 'right';
+            else if (dc === -1) dir = 'left';
+            else if (dr === 1) dir = 'down';
+            else dir = 'up';
+            if (path.length > 0 && path[path.length - 1].dir === dir) {
+                path[path.length - 1].count++;
+            } else {
+                path.push({ dir, count: 1 });
+            }
+        }
+        return path;
     }
 
     // =========================================================================

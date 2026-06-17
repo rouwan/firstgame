@@ -164,6 +164,7 @@ class ArrowLine {
     // =========================================================================
     advance() {
         if (this._moving) return;
+        if (ArrowLine._globalLock) return;  // 有撤退进行中，全部禁止
         this._moving = true;
 
         // 上报玩家点击（一次点击，后续自动巡航的 advance 步与之区分）
@@ -265,14 +266,15 @@ class ArrowLine {
     // _retreat — 后退到目标点
     // =========================================================================
     _retreat(targetCol, targetRow) {
-        this._moving = true;  // 锁住，防止 advance 与 retreat 同时跑
+        this._moving = true;
+        ArrowLine._globalLock = true;  // 撤退期间全局禁止点击
         const stepMs = CONFIG.ARROW_LINE.STEP_DURATION;
 
         const tick = () => {
-            if (this.steps.length === 0) { this._moving = false; return; }
+            if (this.steps.length === 0) { this._moving = false; ArrowLine._globalLock = false; return; }
 
             const tail = this.steps[this.steps.length - 1];
-            if (tail.startCol === targetCol && tail.startRow === targetRow) { this._moving = false; return; }
+            if (tail.startCol === targetCol && tail.startRow === targetRow) { this._moving = false; ArrowLine._globalLock = false; return; }
 
             // 撤退方向: 优先从栈取(还原advance弹掉的step), 栈空则用当前尾部方向
             const dirKey = this._retreatDirs.length > 0 ? this._retreatDirs.pop() : tail.dir;

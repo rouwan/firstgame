@@ -91,138 +91,70 @@ class GameScene extends Phaser.Scene {
         });
 
         // =========================================================================
-        // 箭头阵 — 点阵 + 随机游走生成（进入场景立即执行）
+        // 实验：点阵 + 单线生成按钮
         // =========================================================================
         const matrix = new ArrowMatrixNew(this, CONFIG.MATRIX.COLS, CONFIG.MATRIX.ROWS, CONFIG.MATRIX.SPACING);
         matrix.drawDots();
         matrix.setPosition(width / 2, height / 2 + 20);
 
-        // 分步生成按钮 — 每按一次执行一轮生成
-        matrix.startGeneration();
+        // 五阶段生成：1→2→3→2→4→结束
+        const sequence = [1, 2, 3, 2, 4];
+        let seqIdx = 0;
         let genDone = false;
-
-        const genBtn = this.add.text(12, height - 12, '🔄 生成 (1)', {
-            fontSize: '13px', color: '#ffffff', backgroundColor: '#774488',
-            padding: { x: 8, y: 5 }, fontFamily: 'Arial, sans-serif',
+        const names = { 1: '阶段1: 边界线', 2: '阶段2: 前序线', 3: '阶段3: 向内线', 4: '阶段4: 清场' };
+        const genBtn = this.add.text(width / 2, height - 20, names[sequence[0]] + ' (0)', {
+            fontSize: '18px', color: '#ffffff', backgroundColor: '#4488ff',
+            padding: { x: 20, y: 10 }, fontFamily: 'Arial, sans-serif',
         })
-            .setOrigin(0, 1)
+            .setOrigin(0.5, 1)
             .setInteractive({ useHandCursor: true })
             .setDepth(100);
 
         genBtn.on('pointerdown', () => {
-            if (genDone) {
-                showPopup(this, 60, height - 50, '已结束');
-                return;
-            }
-            const info = matrix.generateNextBatch();
-            if (!info) {
+            if (genDone) return;
+            const phase = sequence[seqIdx];
+            const type = matrix.generateNextBatch(phase);
+            if (!type) {
                 genDone = true;
-                genBtn.setText('🔄 结束').setColor('#888888').setStyle({ backgroundColor: '#333333' });
-                if (ArrowLine.DEV) console.log('[GenStep] Done');
-                showPopup(this, 60, height - 50, '生成结束');
+                genBtn.setText('生成结束').setColor('#888888')
+                    .setStyle({ backgroundColor: '#333333' }).disableInteractive();
                 return;
             }
-            genBtn.setText(`🔄 生成 (${info.round})`);
-            showPopup(this, 60, height - 50, `${info.round}: ${info.count}条 ${info.labels}`);
+            seqIdx++;
+            if (seqIdx >= sequence.length) {
+                genDone = true;
+                genBtn.setText('生成结束').setColor('#888888')
+                    .setStyle({ backgroundColor: '#333333' }).disableInteractive();
+                return;
+            }
+            genBtn.setText(names[sequence[seqIdx]] + ` (${matrix.lines.length})`);
         });
 
-        // 一键生成全部轮次
-        const genAllBtn = this.add.text(12, height - 40, '⚡ 一键全部', {
-            fontSize: '13px', color: '#ffffff', backgroundColor: '#aa4455',
-            padding: { x: 8, y: 5 }, fontFamily: 'Arial, sans-serif',
+        // 下载 log
+        const dumpBtn = this.add.text(width / 2, height - 56, '📋 下载Log', {
+            fontSize: '14px', color: '#ffffff', backgroundColor: '#555555',
+            padding: { x: 12, y: 6 }, fontFamily: 'Arial, sans-serif',
         })
-            .setOrigin(0, 1)
+            .setOrigin(0.5, 1)
             .setInteractive({ useHandCursor: true })
             .setDepth(100);
 
-        genAllBtn.on('pointerdown', () => {
-            if (genDone) return;
-            genDone = true;
-            const count = matrix.lines.length;
-            matrix.generateAll();
-            const total = matrix.lines.length - count;
-            genBtn.setText('🔄 结束').setColor('#888888').setStyle({ backgroundColor: '#333333' });
-            genAllBtn.setText(`⚡ 完成 (+${total})`).setColor('#888888')
-                .setStyle({ backgroundColor: '#333333' }).disableInteractive();
-        });
-
-        // =========================================================================
-        // 底部按钮栏 — 横向排列（右到左：下载日志 | 自动解图 | 提示）
-        // =========================================================================
-        const btnY = height - 12;
-        const btnGap = 6;  // 按钮间距
-
-        // 📋 下载日志（最右边）
-        const logBtn = this.add.text(width - 12, btnY, '📋 日志', {
-            fontSize: '13px', color: '#ffffff', backgroundColor: '#555555',
-            padding: { x: 8, y: 5 }, fontFamily: 'Arial, sans-serif',
-        }).setOrigin(1, 1).setInteractive({ useHandCursor: true }).setDepth(100);
-
-        logBtn.on('pointerdown', () => {
+        dumpBtn.on('pointerdown', () => {
             const report = matrix.dump();
+            if (!report) return;
             const json = JSON.stringify(report, null, 2);
             const blob = new Blob([json], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'arrow-matrix-' + new Date().toISOString().slice(0, 19).replace(/:/g, '-') + '.log';
+            const now = new Date();
+            const localStr = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0')
+                + 'T' + String(now.getHours()).padStart(2,'0') + '-' + String(now.getMinutes()).padStart(2,'0') + '-' + String(now.getSeconds()).padStart(2,'0');
+            a.download = 'line-gen-' + localStr + '.log';
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            showPopup(this, width - 80, height - 50, '已下载');
-        });
-
-        // 🤖 自动解图 — 按序列依次发射
-        const logBtnW = logBtn.width + btnGap;
-        let autoRunning = false;
-        const autoBtn = this.add.text(width - 12 - logBtnW, btnY, '🤖 自动', {
-            fontSize: '13px', color: '#ffffff', backgroundColor: '#886644',
-            padding: { x: 8, y: 5 }, fontFamily: 'Arial, sans-serif',
-        }).setOrigin(1, 1).setInteractive({ useHandCursor: true }).setDepth(100);
-
-        autoBtn.on('pointerdown', () => {
-            if (autoRunning) return;
-            autoRunning = true;
-            autoBtn.setText('🤖 运行').setColor('#ffcc88');
-            matrix.autoSolve((line, status) => {
-                if (status === 'done') {
-                    autoRunning = false;
-                    autoBtn.setText('🤖 结束').setColor('#888888').setStyle({ backgroundColor: '#333333' });
-                } else if (status === 'stuck') {
-                    autoRunning = false;
-                    autoBtn.setText('🤖 死锁').setColor('#ff4444');
-                }
-            });
-        });
-
-        // 💡 提示
-        const autoBtnW = autoBtn.width + btnGap;
-        const hintBtn = this.add.text(width - 12 - logBtnW - autoBtnW, btnY, '💡 提示', {
-            fontSize: '13px', color: '#ffffff', backgroundColor: '#557744',
-            padding: { x: 8, y: 5 }, fontFamily: 'Arial, sans-serif',
-        }).setOrigin(1, 1).setInteractive({ useHandCursor: true }).setDepth(100);
-
-        hintBtn.on('pointerdown', () => {
-            const line = matrix.peekNextSequenceLine();
-            if (!line) {
-                hintBtn.setText('💡 结束').setColor('#888888').setStyle({ backgroundColor: '#333333' }).disableInteractive();
-                return;
-            }
-            let flashCount = 0;
-            const maxFlashes = 6;
-            const flash = () => {
-                if (flashCount >= maxFlashes) return;
-                if (flashCount % 2 === 0) {
-                    line.images.forEach(img => img.setTintFill(0x44ff44));
-                } else {
-                    line.images.forEach(img => img.clearTint());
-                }
-                flashCount++;
-                this.time.delayedCall(200, flash);
-            };
-            flash();
-            hintBtn.setText(`💡 ${matrix.orderIndex + 1}/${matrix.lines.length}`);
         });
 
         // =========================================================================
