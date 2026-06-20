@@ -111,3 +111,5 @@ const config = {
  * 实际开发中你也可以不暴露全局，用即可。
  */
 const game = new Phaser.Game(config);
+// 挂到 window 以便 chrome-use eval 和浏览器控制台直接访问
+window.game = game;
